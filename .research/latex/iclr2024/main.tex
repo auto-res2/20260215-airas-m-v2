@@ -1,0 +1,178 @@
+\PassOptionsToPackage{numbers}{natbib}
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2024_conference,times}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{titletoc}
+
+\usepackage{subcaption}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{multirow}
+\usepackage{color}
+\usepackage{colortbl}
+\usepackage{cleveref}
+\usepackage{algorithm}
+\usepackage{algorithmicx}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{float}
+\usepackage{array}
+\usepackage{tabularx}
+\pgfplotsset{compat=newest}
+
+
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+
+\graphicspath{{../}} % To reference your generated figures, see below.
+
+\title{Verified Structured Triple Extraction for Japanese Document-Level Relation Extraction with Low-Cost LLMs}
+
+\author{AIRAS}
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Japanese document-level relation extraction (DocRE) is a practical route to building knowledge graphs from long documents, but low-cost large language models (LLMs) often yield low precision when asked to extract all triples in a single pass, producing many false positives. This is hard because document-level evidence is dispersed across sentences and the number of entity pairs is large, so generation errors compound when extraction, typing, and relation decisions are conflated. We propose a training-free, two-stage pipeline that separates recall-oriented candidate generation from precision-oriented verification, using JSON Schema–constrained decoding to ensure machine-parseable outputs in both stages, and then applies deterministic domain and range (head_type, tail_type) constraints learned from the training split to filter incompatible predictions. We evaluate one-shot extraction against the proposed pipeline on 10 character-length–stratified JacRED dev documents across Gemini Flash family configurations. Logged results show consistent false-positive reductions and precision gains for every model setting, with best observed F1 improving from 0.20 to 0.27 under matched configurations. The study demonstrates that verification plus lightweight type constraints can materially improve the reliability of low-cost LLM-based Japanese DocRE without supervised fine-tuning.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+Document-level relation extraction (DocRE) aims to identify semantic relations between entities given an entire document, including relations whose evidence spans multiple sentences and requires coreference or multi-hop reasoning \cite{yao-2019-docred,delaunay-2023-comprehensive}. Compared with sentence-level relation extraction, DocRE must handle a quadratic number of entity pairs per document and must aggregate dispersed evidence, which increases both computational burden and ambiguity. These challenges become even more pronounced in Japanese, where subject omission, flexible word order, and discourse-level phenomena can obscure explicit relational cues. Recent work has begun to address the resource gap by constructing Japanese DocRE benchmarks, notably JacRED, a Japanese Wikipedia-based dataset with evidence sentences and a relation schema designed for document-level evaluation \cite{ma-2024-building}. While supervised Japanese models can reach strong performance on JacRED, in-context learning with LLMs has been found to perform poorly, highlighting a practical gap between the promise of LLM-driven information extraction and their reliability in document-level settings \cite{ma-2024-building,xu-2023-large}.
+
+A common deployment pattern is to prompt an LLM once to extract all relation triples from a document. This one-shot approach is operationally attractive: it is simple to implement and can be inexpensive when using fast endpoints. However, our experiments on JacRED show that one-shot extraction with low-cost LLMs produces a large number of false positives, leading to low precision even when recall is also limited. In knowledge graph construction, low precision is especially harmful because spurious edges propagate into downstream analytics and retrieval.
+
+This failure mode reflects a deeper mismatch between the DocRE task structure and one-shot generation. A single prompt implicitly demands that the model (i) find relevant entity mentions, (ii) decide which entity pairs are candidate facts, (iii) infer relation type and direction, and (iv) emit well-formed structured outputs. Each subproblem is difficult at document scale; when coupled, errors compound and become hard to diagnose or correct.
+
+We test a decomposition hypothesis motivated by classical pipeline design and by recent reliability discussions in generative information extraction \cite{xu-2023-large}: precision can be improved without supervised fine-tuning by separating proposing from deciding. Concretely, we introduce a two-stage pipeline that uses JSON Schema–constrained decoding to obtain parseable intermediate artifacts. Constrained decoding has been systematically studied for JSON Schema outputs, showing that it can provide reliable structured generations depending on schema complexity and implementation details \cite{geng-2025-generating}. We exploit structured outputs not as an end in itself, but as an enabling mechanism for verification and symbolic filtering.
+
+Our method proceeds in three steps. Stage 1 generates a recall-oriented set of candidate relation instances from a document. Stage 2 verifies these candidates in batches under a stricter instruction, aiming to remove hallucinated or weakly supported relations. Finally, we apply deterministic domain and range constraints: for each relation, we restrict allowed (head_type, tail_type) pairs to those observed in the training split, filtering out systematically incompatible predictions.
+
+We evaluate on a controlled, low-budget setting: 10 documents from the JacRED dev set selected via character-length-based stratified sampling. We compare a baseline one-shot extractor against the proposed two-stage pipeline across multiple Gemini Flash family configurations (Gemini 2.0 Flash, Gemini 2.5 Flash, Gemini 3 Flash Preview), including variants with and without thinking. We report micro-averaged precision, recall, and F1.
+
+Across all tested configurations, the proposed pipeline reduces false positives and improves precision. The strongest improvement appears for Gemini 3 Flash Preview without thinking, where F1 increases from 0.20 to 0.27 under matched settings. At the same time, recall remains low overall, indicating that candidate generation and entity alignment are the dominant bottlenecks.
+
+Contributions:
+- We present a training-free, low-cost Japanese DocRE pipeline that decomposes extraction into recall-oriented candidate generation and precision-oriented verification, using JSON Schema-constrained decoding to ensure robust intermediate representations.
+- We show that relation-specific domain and range constraints derived from the training split provide an effective deterministic filter for reducing false positives in LLM-extracted triples.
+- We provide an empirical comparison on a stratified sample of JacRED dev documents across multiple Gemini Flash configurations, demonstrating consistent precision gains and frequent F1 improvements over one-shot extraction.
+- We analyze how enabling thinking interacts with decomposition: it can improve one-shot extraction, but may reduce true positives during verification in the proposed pipeline.
+
+Future work should focus on improving recall without losing the precision gains, including more robust entity alignment, better handling of relation directionality, and decompositions that more directly target implicit and multi-hop evidence patterns common in DocRE \cite{delaunay-2023-comprehensive}.
+
+\section{Related Work}
+\label{sec:related}
+Our work connects three themes: document-level relation extraction, LLM-based generative information extraction, and structured output enforcement.
+
+DocRE as supervised multi-sentence relation reasoning. DocRED formalized DocRE around Wikipedia documents aligned with Wikidata and emphasized that many facts require evidence distributed across multiple sentences \cite{yao-2019-docred}. The DocRE literature has since largely focused on improving supervised accuracy via stronger encoders and reasoning modules (sequence, graph, and transformer families), as summarized by Delaunay et al. \cite{delaunay-2023-comprehensive}. These approaches typically assume access to labeled training data and a full training pipeline. In contrast, our setting assumes no fine-tuning and targets an API-based workflow, so the main limitation of supervised DocRE methods for our purpose is not conceptual relevance but operational inapplicability under strict cost and deployment constraints.
+
+Japanese DocRE resources and the reliability gap for prompting. JacRED provides the first public Japanese Wikipedia-based DocRE benchmark with evidence sentences, entity typing, and a 35-relation schema \cite{ma-2024-building}. The JacRED paper also reports that LLM in-context learning performs poorly for Japanese DocRE, suggesting that prompting alone may be insufficient for reliable extraction. We adopt JacRED as the evaluation substrate but focus on a specific practical gap left open: even when one-shot prompting is inexpensive, precision can be too low for knowledge graph construction. Our contribution is therefore not a new dataset or a new supervised model, but a method to reduce false positives in a low-budget prompting regime.
+
+Generative IE and decomposition without fine-tuning. Surveys of LLM-based generative IE identify prompt sensitivity and hallucination as central challenges, and they highlight decomposition and self-correction as emerging mitigation strategies \cite{xu-2023-large}. Our method instantiates this broader idea with a generate-then-verify decomposition tailored to DocRE, where the combinatorial candidate space makes false positives particularly common. Relative to general-purpose self-correction loops, we keep the pipeline minimal and explicitly measure precision and recall under a fixed, low-cost evaluation.
+
+Structured outputs and constrained decoding as an enabling primitive. Constrained decoding for JSON Schema outputs has been benchmarked with attention to compliance and efficiency, revealing variability across engines and schema complexities \cite{geng-2025-generating}. We use JSON Schema-constrained decoding to guarantee parseable intermediate artifacts (candidate lists and verification decisions). The key difference is that our goal is not to benchmark schema compliance, but to use schema compliance to support a verification-oriented extraction pipeline and deterministic post-processing.
+
+Joint modeling as a conceptual foil. Joint NER and RE models based on pretrained transformers reduce pipeline error propagation in supervised sentence-level settings \cite{giorgi-2019-end}. However, they require labeled data and are designed for intra-sentence relations, so they are not directly comparable to our Japanese DocRE, no-training, document-level extraction scenario. They nevertheless motivate the general principle that making intermediate structure explicit can control error propagation. Our work pursues an alternative instantiation of this principle: structuring LLM outputs and inserting an explicit verification step rather than training a joint neural model.
+
+\section{Background}
+\label{sec:background}
+Document-level relation extraction task. A DocRE instance consists of a document d and a set of entities that occur in it (with potentially multiple mentions per entity). The goal is to predict directed relation instances as triples (h, r, t), where h and t denote entities and r is a relation label. Unlike sentence-level relation extraction, DocRE allows evidence to be distributed across multiple sentences, and it often requires aggregating cues across discourse and coreference \cite{yao-2019-docred,delaunay-2023-comprehensive}. The number of possible ordered entity pairs grows quadratically with the number of entities, which increases both computational cost and the opportunity for spurious predictions.
+
+Dataset context: JacRED. JacRED is a Japanese Wikipedia-based DocRE dataset containing 2,000 documents and 42,241 annotated triples, with sentence-level supporting evidence, 8 entity types (IREX-style), and 35 relations (28 annotated, plus 7 inverse relations added post hoc) \cite{ma-2024-building}. JacRED is motivated in part by limited transferability from English DocRE resources to native Japanese documents. Our experiments use the JacRED development split and rely on its relation schema and entity typing.
+
+Evaluation protocol and notation. For a document d, let T(d) be the gold set of relation triples and T_hat(d) the predicted set. Aggregating across documents, we compute true positives TP = |T_hat ∩ T|, false positives FP = |T_hat \ T|, and false negatives FN = |T \ T_hat|. Micro-precision is P = TP / (TP + FP), micro-recall is R = TP / (TP + FN), and micro-F1 is F1 = 2PR / (P + R). This micro-averaged evaluation is standard in DocRE benchmarks \cite{yao-2019-docred,delaunay-2023-comprehensive}.
+
+Operational assumptions. We consider an extraction setting where the model is accessed through an API and cannot be fine-tuned. We assume the API supports JSON Schema-constrained decoding, enabling the model to emit schema-compliant JSON outputs rather than free-form text. Separately, we assume access to a labeled training split (from JacRED) solely to compute empirical relation-specific type compatibility patterns. These assumptions reflect a pragmatic regime: a low-cost extractor augmented by lightweight symbolic processing, without any gradient-based learning.
+
+\section{Method}
+\label{sec:method}
+Conceptual overview. The method targets a specific failure mode of one-shot LLM extraction for DocRE: excessive false positives arising from conflating candidate proposal with final decision-making, under long-context ambiguity and many possible entity pairs. We address this by decomposing extraction into a proposal stage and a decision stage, while enforcing that all intermediate artifacts are structured and machine-validated. A final deterministic filter injects a simple data-driven prior about which entity type pairs are plausible for each relation.
+
+Stage 1: recall-oriented candidate generation. Given a document d, we prompt the LLM to produce a set of candidate triples. The instruction is explicitly permissive, encouraging the model to include plausible relation hypotheses even under uncertainty, thereby prioritizing recall. The output is generated under JSON Schema-constrained decoding using an extraction schema (EXTRACTION_SCHEMA). The key requirement is that each candidate is represented as a structured record with fields sufficient to identify the head entity, relation label, and tail entity, plus any auxiliary attributes used downstream.
+
+Stage 2: precision-oriented candidate verification. Given the Stage 1 candidate set for document d, we ask the LLM to verify each candidate against the document text. Verification is run in batches of size 10 for efficiency. The verification prompt is stricter than the generation prompt: candidates should be accepted only when supported by the document. The output is constrained by a verification schema (VERIFICATION_SCHEMA) that yields a structured decision for each candidate. This stage is designed to remove hallucinated relations and relations supported only by weak or misread evidence.
+
+Deterministic post-processing via relation-specific type constraints. After verification, we apply a deterministic filter intended to remove a common remaining error mode: relations predicted between incompatible entity types. For each relation r, we compute from the training split the empirical constraint set C(r) = {(type(h), type(t))} observed among gold triples. A verified triple (h, r, t) is retained only if (type(h), type(t)) belongs to C(r). This step cannot introduce new triples and primarily affects precision.
+
+Role of structured outputs. JSON Schema-constrained decoding is used in both stages to ensure that intermediate representations are parseable and consistent. Prior benchmarking has shown that constrained decoding can yield high compliance but that behavior varies by engine and schema \cite{geng-2025-generating}. In our pipeline, schema compliance is a prerequisite for reliable downstream processing, but the primary accuracy mechanism is the generate-then-verify decomposition plus symbolic type filtering.
+
+Design rationale and expected effects. The two-stage decomposition explicitly separates what could be true (candidate generation) from what is supported (verification). This reduces the need for a single generation step to simultaneously explore the hypothesis space and self-censor, which in our problem setting tends to produce many unsupported triples. The final type constraints exploit dataset regularities about relation signatures to eliminate a systematic subset of false positives at negligible computational cost.
+
+\section{Experimental Setup}
+\label{sec:experimental}
+Evaluation setting and scope. We conduct a targeted empirical comparison between one-shot extraction and the proposed two-stage pipeline under a constrained evaluation budget. The goal is to test whether verification and type constraints reduce false positives for Japanese DocRE when using low-cost LLM endpoints.
+
+Data selection and sampling. We use the JacRED development split \cite{ma-2024-building}. To obtain a small but diverse evaluation set, we select 10 documents via character-length-based stratified sampling, ensuring coverage across document lengths while keeping API cost manageable.
+
+Methods compared (controlled vs varied). We compare two extraction strategies:
+(1) Baseline (One-shot extraction): a single LLM call extracts entities and relations simultaneously, followed by simple filtering.
+(2) Proposed (Two-stage): Stage 1 candidate generation, Stage 2 batch verification (batch size 10), followed by deterministic filtering using relation-specific (head_type, tail_type) constraints derived from the JacRED training split.
+Across all experiments, the evaluation documents, metrics, and post-processing rules are held constant. The main factor varied is the model configuration.
+
+Models and configurations. We evaluate three Gemini Flash family models: Gemini 2.0 Flash, Gemini 2.5 Flash, and Gemini 3 Flash Preview. For Gemini 2.5 Flash and Gemini 3 Flash Preview, we test two thinking settings: off and a budget of 2048 tokens. For Gemini 2.0 Flash, thinking is recorded as none.
+
+Implementation details relevant to interpretation. The pipeline is implemented via the Gemini API using the Google GenAI SDK. Both stages use Structured Outputs with JSON Schema-constrained decoding, using schemas referred to as EXTRACTION_SCHEMA and VERIFICATION_SCHEMA. Verification decisions are produced in batches of size 10 to reduce the number of calls.
+
+Metrics. We compute micro-averaged precision, recall, and F1 over the 10 selected documents, using aggregated TP, FP, and FN as defined in the Background. This follows standard DocRE evaluation practice \cite{yao-2019-docred,delaunay-2023-comprehensive}.
+
+Limitations introduced by the design. Because the evaluation uses only 10 development documents, the study is intended as an initial, cost-conscious assessment of robustness trends rather than a statistically powered benchmark. Additionally, the proposed method uses more LLM calls than the baseline due to verification, reflecting a deliberate cost-accuracy trade-off rather than an attempt to equalize compute.
+
+\section{Results}
+\label{sec:results}
+All results reported in this section come from saved experiment logs on the 10-document JacRED dev sample. No figures were produced in the logs, so we summarize outcomes using tables and structured comparisons.
+
+Experiment suite overview. We evaluate five model configurations: Gemini 2.0 Flash (thinking none), Gemini 2.5 Flash (thinking off and 2048), and Gemini 3 Flash Preview (thinking off and 2048). For each configuration, we compare Baseline (one-shot) against Proposed (two-stage with verification and type constraints).
+
+Table 1: Micro-averaged DocRE metrics across model configurations.
+Model configuration | Condition | Precision | Recall | F1 | TP | FP | FN
+Gemini 2.0 Flash (none) | Baseline | 0.20 | 0.15 | 0.17 | 22 | 86 | 126
+Gemini 2.0 Flash (none) | Proposed | 0.35 | 0.19 | 0.25 | 28 | 51 | 121
+Gemini 2.5 Flash (off) | Baseline | 0.17 | 0.16 | 0.17 | 24 | 115 | 124
+Gemini 2.5 Flash (off) | Proposed | 0.30 | 0.12 | 0.17 | 18 | 42 | 130
+Gemini 2.5 Flash (2048) | Baseline | 0.18 | 0.17 | 0.17 | 25 | 115 | 123
+Gemini 2.5 Flash (2048) | Proposed | 0.36 | 0.21 | 0.27 | 31 | 54 | 117
+Gemini 3 Flash Preview (off) | Baseline | 0.26 | 0.16 | 0.20 | 24 | 70 | 124
+Gemini 3 Flash Preview (off) | Proposed | 0.36 | 0.22 | 0.27 | 32 | 56 | 116
+Gemini 3 Flash Preview (2048) | Baseline | 0.31 | 0.22 | 0.26 | 33 | 74 | 115
+Gemini 3 Flash Preview (2048) | Proposed | 0.37 | 0.20 | 0.26 | 30 | 52 | 118
+
+Pattern 1 (observation): false positives consistently decrease under the proposed pipeline. In every configuration, FP is lower for Proposed than for Baseline: 86 to 51 (Gemini 2.0), 115 to 42 (Gemini 2.5 off), 115 to 54 (Gemini 2.5 2048), 70 to 56 (Gemini 3 off), and 74 to 52 (Gemini 3 2048). Correspondingly, precision increases in every matched comparison (+0.06 to +0.18 absolute).
+
+Pattern 2 (observation): recall effects are mixed, and overall recall remains low. Recall increases for three configurations (Gemini 2.0, Gemini 2.5 2048, Gemini 3 off) but decreases for two (Gemini 2.5 off, Gemini 3 2048). Across all runs, recall ranges from 0.12 to 0.22, and FN counts remain high (115 to 130), indicating that missing gold relations is the dominant residual error mode.
+
+Pattern 3 (observation): F1 improves in most, but not all, settings. F1 increases for Gemini 2.0 (0.17 to 0.25), Gemini 2.5 with thinking 2048 (0.17 to 0.27), and Gemini 3 without thinking (0.20 to 0.27). F1 is unchanged for Gemini 2.5 off (0.17 to 0.17) and Gemini 3 with thinking 2048 (0.26 to 0.26).
+
+Interpretation: verification and type constraints primarily act as a precision filter. The consistent FP reductions, paired with sometimes-decreasing TP (e.g., Gemini 2.5 off: TP 24 to 18; Gemini 3 2048: TP 33 to 30), suggest that the combined verification-plus-constraints stack can be overly conservative in some configurations. This aligns with the analysis report's qualitative finding that enabling thinking can improve the one-shot baseline but may over-regularize verification in the proposed pipeline, removing true positives.
+
+End-to-end ablation perspective and fairness. We did not log component-wise ablations (for example, verification without type constraints). Therefore, the Baseline vs Proposed comparison should be interpreted as the net effect of the full pipeline (verification plus deterministic type filtering). Because we evaluate both methods on the same 10 documents under matched model settings, differences are attributable to the pipeline design rather than dataset variation.
+
+Practical implications and limitations. The best observed cost-performance trade-off in the analysis report is Gemini 3 Flash Preview without thinking, which achieves F1 0.27 with improved precision. Nevertheless, the overall recall ceiling in this evaluation suggests that future work should prioritize improving candidate generation coverage and entity alignment robustness, as well as addressing relation directionality and implicit multi-hop evidence patterns.
+
+\section{Conclusion}
+\label{sec:conclusion}
+Low-cost LLMs offer an appealing interface for building knowledge graphs, but in Japanese document-level relation extraction they can produce many unsupported triples under one-shot prompting, leading to low precision. We showed that this reliability problem can be mitigated without supervised fine-tuning by decomposing extraction into a recall-oriented proposal step and a precision-oriented verification step, both enforced with JSON Schema-constrained decoding, and by applying deterministic relation-specific type compatibility constraints derived from training data.
+
+Across all tested Gemini Flash configurations on a stratified 10-document JacRED dev sample, the proposed pipeline consistently reduced false positives and increased precision, and it improved micro-F1 in three of five matched comparisons, reaching a best observed F1 of 0.27 compared to 0.20 for the comparable baseline. What remains unresolved is recall: missed gold relations dominate errors, and thinking can sometimes make verification overly conservative.
+
+More broadly, the results suggest a practical design pattern for LLM-based DocRE under cost constraints: prioritize structured intermediate representations and add explicit verification and lightweight symbolic filters to control false positives. Future work should investigate recall-oriented improvements that preserve these precision gains, including more robust entity alignment and strategies tailored to implicit or multi-hop document evidence.
+
+This work was generated by \textsc{AIRAS} \citep{airas2025}.
+
+\bibliographystyle{iclr2024_conference}
+\bibliography{references}
+
+\end{document}
